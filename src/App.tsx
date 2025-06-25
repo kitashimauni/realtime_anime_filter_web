@@ -975,29 +975,6 @@ export default function App() {
             )}
             
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap', marginTop: '10px' }}>
-              <button 
-                onClick={() => {
-                  const cvStatus = {
-                    cvReady,
-                    stream: !!stream,
-                    openCvExists: typeof (window as any).cv !== 'undefined'
-                  };
-                  console.log('OpenCV状態確認:', cvStatus);
-                  
-                  // OpenCVが読み込まれているのにcvReadyがfalseの場合は強制更新
-                  if (!cvReady && typeof (window as any).cv !== 'undefined') {
-                    console.log('OpenCVを強制的に準備完了に設定');
-                    setCvReady(true);
-                  }
-                }}
-                style={{ 
-                  padding: isMobile ? '8px 16px' : '5px 10px',
-                  fontSize: isMobile ? '0.9rem' : '1rem'
-                }}
-              >
-                OpenCV状態確認
-              </button>
-              
               {/* カメラ再初期化ボタン */}
               <button 
                 onClick={async () => {
