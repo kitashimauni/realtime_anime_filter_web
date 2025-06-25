@@ -45,6 +45,13 @@ export default function App() {
   const [processingQuality, setProcessingQuality] = useState<'high' | 'medium' | 'low'>('medium');
   const [lastProcessTime, setLastProcessTime] = useState(0);
   const frameSkipCountRef = useRef(0);
+  
+  // メモリ管理関連
+  const [memoryUsage, setMemoryUsage] = useState<number>(0);
+  const [gcCount, setGcCount] = useState<number>(0);
+  const gcIntervalRef = useRef<number | null>(null);
+  const memoryCheckIntervalRef = useRef<number | null>(null);
+  const frameCountRef = useRef<number>(0);
 
   useEffect(() => {
     console.log('OpenCV初期化開始');
@@ -64,6 +71,62 @@ export default function App() {
     };
     
     waitForOpenCV();
+  }, []);
+
+  // メモリ管理とGC実行のuseEffect
+  useEffect(() => {
+    // メモリ使用量監視
+    const checkMemoryUsage = () => {
+      if ('memory' in performance) {
+        const memInfo = (performance as any).memory;
+        const usedMB = Math.round(memInfo.usedJSHeapSize / 1024 / 1024);
+        setMemoryUsage(usedMB);
+        
+        // メモリ使用量が200MB以上の場合、GCを強制実行
+        if (usedMB > 200) {
+          console.log(`メモリ使用量が高いため強制GC実行: ${usedMB}MB`);
+          forceGarbageCollection();
+        }
+      }
+    };
+
+    // 定期的なガベージコレクション実行
+    const forceGarbageCollection = () => {
+      if ((window as any).gc) {
+        // Chrome DevToolsでgcが利用可能な場合
+        (window as any).gc();
+        console.log('手動GC実行（Chrome DevTools）');
+      } else {
+        // 通常のJavaScriptでのメモリ解放促進
+        const largeArray = new Array(1000000).fill(null);
+        largeArray.splice(0);
+        console.log('メモリ解放処理実行');
+      }
+      
+      setGcCount(prev => prev + 1);
+    };
+
+    // 定期的なGC実行（30秒ごと）
+    gcIntervalRef.current = window.setInterval(() => {
+      forceGarbageCollection();
+    }, 30000);
+
+    // メモリ使用量チェック（5秒ごと）
+    memoryCheckIntervalRef.current = window.setInterval(() => {
+      checkMemoryUsage();
+    }, 5000);
+
+    // 初回実行
+    checkMemoryUsage();
+
+    return () => {
+      if (gcIntervalRef.current) {
+        clearInterval(gcIntervalRef.current);
+      }
+      if (memoryCheckIntervalRef.current) {
+        clearInterval(memoryCheckIntervalRef.current);
+      }
+    };
   }, []);
 
   // モバイル検出とリサイズハンドラー
@@ -404,11 +467,25 @@ export default function App() {
       }
 
       frameCount++;
+      frameCountRef.current = frameCount;
+      
       if (frameCount === 1) {
         console.log('最初のフレーム処理を開始');
       }
       if (frameCount % 30 === 0) {
-        console.log(`フィルター処理実行中 - フレーム ${frameCount}, 品質: ${processingQuality}`);
+        console.log(`フィルター処理実行中 - フレーム ${frameCount}, 品質: ${processingQuality}, メモリ: ${memoryUsage}MB, GC実行回数: ${gcCount}`);
+      }
+      
+      // 100フレームごとに軽量GCを実行
+      if (frameCount % 100 === 0) {
+        try {
+          // 小さなメモリ解放処理
+          const tempArray = new Array(10000).fill(null);
+          tempArray.splice(0);
+          console.log(`フレーム ${frameCount}: 軽量メモリ解放実行`);
+        } catch (error) {
+          console.log('軽量メモリ解放でエラー:', error);
+        }
       }
       
       const startTime = performance.now();
@@ -459,35 +536,63 @@ export default function App() {
         // ビデオフレームを縮小してcanvasに描画
         ctx.drawImage(videoRef.current, 0, 0, processWidth, processHeight);
         
-        // canvasからImageDataを取得してMatに変換
-        const imageData = ctx.getImageData(0, 0, processWidth, processHeight);
-        const src = cv.matFromImageData(imageData);
+        // OpenCVオブジェクトの適切な管理
+        let src: any = null;
+        let result: any = null;
+        let resized: any = null;
         
-        // 読み取ったMatが空でないことを確認
-        if (src.empty()) {
-          console.log('ビデオフレームが空です');
-          src.delete();
-          setIsProcessing(false);
-          requestId = requestAnimationFrame(draw);
-          return;
+        try {
+          // canvasからImageDataを取得してMatに変換
+          const imageData = ctx.getImageData(0, 0, processWidth, processHeight);
+          src = cv.matFromImageData(imageData);
+          
+          // 読み取ったMatが空でないことを確認
+          if (src.empty()) {
+            console.log('ビデオフレームが空です');
+            throw new Error('Empty video frame');
+          }
+          
+          // アニメ風フィルター処理を適用
+          result = cartoonizeImage(src);
+          
+          if (!result || result.empty()) {
+            console.log('フィルター処理結果が空です');
+            throw new Error('Empty filter result');
+          }
+          
+          // 結果を元のサイズに拡大してキャンバスに描画
+          if (processWidth !== width || processHeight !== height) {
+            resized = new cv.Mat();
+            cv.resize(result, resized, new cv.Size(width, height), 0, 0, cv.INTER_LINEAR);
+            cv.imshow(canvasRef.current, resized);
+          } else {
+            cv.imshow(canvasRef.current, result);
+          }
+          
+        } catch (error) {
+          console.error('OpenCV処理エラー:', error);
+          // エラー時はオリジナル画像を表示
+          try {
+            if (src && !src.empty()) {
+              cv.imshow(canvasRef.current, src);
+            }
+          } catch (fallbackError) {
+            console.error('フォールバック表示もエラー:', fallbackError);
+          }
+        } finally {
+          // 確実にメモリ解放
+          try {
+            if (src && !src.isDeleted()) src.delete();
+            if (result && !result.isDeleted()) result.delete();
+            if (resized && !resized.isDeleted()) resized.delete();
+          } catch (deleteError) {
+            console.error('OpenCVオブジェクト削除エラー:', deleteError);
+          }
+          
+          // 一時キャンバスもクリア
+          canvas2d.width = 0;
+          canvas2d.height = 0;
         }
-        
-        // アニメ風フィルター処理を適用
-        const result = cartoonizeImage(src);
-        
-        // 結果を元のサイズに拡大してキャンバスに描画
-        if (processWidth !== width || processHeight !== height) {
-          const resized = new cv.Mat();
-          cv.resize(result, resized, new cv.Size(width, height), 0, 0, cv.INTER_LINEAR);
-          cv.imshow(canvasRef.current, resized);
-          resized.delete();
-        } else {
-          cv.imshow(canvasRef.current, result);
-        }
-
-        // メモリ解放
-        src.delete();
-        result.delete();
         
         // パフォーマンス測定
         const endTime = performance.now();
@@ -516,13 +621,18 @@ export default function App() {
 
     // アニメ風フィルター処理関数（最適化版）
     function cartoonizeImage(img: any) {
+      // すべてのOpenCVオブジェクトを追跡
+      const matObjects: any[] = [];
+      
       try {
         if (frameCount <= 5) {
           console.log('cartoonizeImage開始 - 入力画像サイズ:', img.rows, 'x', img.cols, '型:', img.type());
         }
         
-        // 入力画像の型をCV_8UC4に変換
+        // 入力画像の型をCV_8UC3に変換
         const imgRGB = new cv.Mat();
+        matObjects.push(imgRGB);
+        
         if (img.type() !== cv.CV_8UC3) {
           cv.cvtColor(img, imgRGB, cv.COLOR_RGBA2RGB);
         } else {
@@ -531,9 +641,18 @@ export default function App() {
         
         // フィルター強度が0の場合は元画像を返す
         if (filterParams.intensity === 0) {
-          imgRGB.delete();
           const result = new cv.Mat();
           img.copyTo(result);
+          
+          // メモリ解放
+          matObjects.forEach(mat => {
+            try {
+              if (mat && !mat.isDeleted()) mat.delete();
+            } catch (e) {
+              console.warn('Mat削除エラー:', e);
+            }
+          });
+          
           return result;
         }
 
@@ -551,6 +670,7 @@ export default function App() {
         
         // ステップ1: バイラテラルフィルターで画像の平滑化
         const imgColor = new cv.Mat();
+        matObjects.push(imgColor);
         cv.bilateralFilter(
           imgRGB, 
           imgColor, 
@@ -561,13 +681,16 @@ export default function App() {
         
         // ステップ2: グレースケール化とメディアンブラー
         const imgGray = new cv.Mat();
+        matObjects.push(imgGray);
         cv.cvtColor(imgRGB, imgGray, cv.COLOR_RGB2GRAY);
         
         const imgBlur = new cv.Mat();
+        matObjects.push(imgBlur);
         cv.medianBlur(imgGray, imgBlur, adjustedParams.medianBlur);
         
         // ステップ3: エッジ検出（適応的閾値処理）
         const imgEdge = new cv.Mat();
+        matObjects.push(imgEdge);
         cv.adaptiveThreshold(
           imgBlur,
           imgEdge,
@@ -580,11 +703,15 @@ export default function App() {
         
         // ステップ4: エッジ画像をRGBに変換
         const imgEdgeColor = new cv.Mat();
+        matObjects.push(imgEdgeColor);
         cv.cvtColor(imgEdge, imgEdgeColor, cv.COLOR_GRAY2RGB);
         
         // ステップ5: カラー画像とエッジ画像を合成
         const cartoon = new cv.Mat();
+        matObjects.push(cartoon);
         cv.bitwise_and(imgColor, imgEdgeColor, cartoon);
+        
+        let finalResult: any;
         
         // フィルター強度の適用
         if (filterParams.intensity < 1.0) {
@@ -597,34 +724,43 @@ export default function App() {
             0, 
             blended
           );
-          
-          // 中間画像のメモリ解放
-          imgRGB.delete();
-          imgColor.delete();
-          imgGray.delete();
-          imgBlur.delete();
-          imgEdge.delete();
-          imgEdgeColor.delete();
-          cartoon.delete();
-          
-          return blended;
+          finalResult = blended;
+        } else {
+          finalResult = new cv.Mat();
+          cartoon.copyTo(finalResult);
         }
         
         // 中間画像のメモリ解放
-        imgRGB.delete();
-        imgColor.delete();
-        imgGray.delete();
-        imgBlur.delete();
-        imgEdge.delete();
-        imgEdgeColor.delete();
+        matObjects.forEach(mat => {
+          try {
+            if (mat && !mat.isDeleted()) mat.delete();
+          } catch (e) {
+            console.warn('Mat削除エラー:', e);
+          }
+        });
         
-        return cartoon;
+        return finalResult;
+        
       } catch (error: any) {
         console.error('cartoonizeImageエラー:', error);
         console.error('エラー詳細:', error.toString());
+        
+        // エラー時も確実にメモリ解放
+        matObjects.forEach(mat => {
+          try {
+            if (mat && !mat.isDeleted()) mat.delete();
+          } catch (e) {
+            console.warn('エラー時Mat削除エラー:', e);
+          }
+        });
+        
         // エラーの場合は元の画像を返す
         const result = new cv.Mat();
-        img.copyTo(result);
+        try {
+          img.copyTo(result);
+        } catch (copyError) {
+          console.error('元画像コピーエラー:', copyError);
+        }
         return result;
       }
     }
@@ -635,6 +771,16 @@ export default function App() {
     return () => {
       console.log('フィルター処理クリーンアップ');
       cancelAnimationFrame(requestId);
+      
+      // メモリ管理タイマーもクリーンアップ
+      if (gcIntervalRef.current) {
+        clearInterval(gcIntervalRef.current);
+        gcIntervalRef.current = null;
+      }
+      if (memoryCheckIntervalRef.current) {
+        clearInterval(memoryCheckIntervalRef.current);
+        memoryCheckIntervalRef.current = null;
+      }
     };
   }, [cvReady, selectedDeviceId, stream, filterParams, frameSkip, processingQuality, isMobile]);
 
