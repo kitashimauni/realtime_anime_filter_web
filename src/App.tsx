@@ -5,6 +5,10 @@ type VideoDevice = MediaDeviceInfo;
 export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // 録画機能用のrefs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingIntervalRef = useRef<number | null>(null);
 
   const [devices, setDevices] = useState<VideoDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
@@ -16,6 +20,8 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(false);
   const [showOriginal, setShowOriginal] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  // 録画時間表示用のstate
+  const [recordingTime, setRecordingTime] = useState(0);
   const [showControls, setShowControls] = useState(true);
   const [showOrientationHint, setShowOrientationHint] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -766,6 +772,86 @@ export default function App() {
     link.click();
   };
 
+  // 録画機能
+  const startRecording = async () => {
+    if (!canvasRef.current) return;
+
+    try {
+      // キャンバスからストリームを取得
+      const canvasStream = canvasRef.current.captureStream(30); // 30fps
+      
+      // 音声は含めない（映像のみ）
+      const options = {
+        mimeType: 'video/webm;codecs=vp9' // VP9コーデックを優先
+      };
+
+      // フォールバック用のmimeType確認
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        options.mimeType = 'video/webm;codecs=vp8';
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options.mimeType = 'video/webm';
+        }
+      }
+
+      mediaRecorderRef.current = new MediaRecorder(canvasStream, options);
+      recordedChunksRef.current = [];
+
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorderRef.current.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `anime-filter-recording-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.webm`;
+        link.click();
+        
+        // メモリリークを防ぐためURLを解放
+        URL.revokeObjectURL(url);
+      };
+
+      mediaRecorderRef.current.start(100); // 100msごとにデータを記録
+      setIsRecording(true);
+      setRecordingTime(0);
+
+      // 録画時間のカウントを開始
+      recordingIntervalRef.current = window.setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+
+      console.log('録画開始');
+    } catch (error) {
+      console.error('録画開始エラー:', error);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      
+      // 録画時間のカウントを停止
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+        recordingIntervalRef.current = null;
+      }
+      
+      console.log('録画停止');
+    }
+  };
+
+  // 録画時間をフォーマット
+  const formatRecordingTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
   // カメラ切り替え（フロント/リア）
   const switchCamera = async () => {
     if (devices.length <= 1) return;
@@ -1290,17 +1376,45 @@ export default function App() {
                 ✕
               </button>
 
-              {/* 中央：モード表示 */}
+              {/* 中央：モード表示と録画時間 */}
               <div style={{
                 color: 'white',
                 fontSize: '16px',
                 fontWeight: 'bold',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '10px'
+                gap: '10px',
+                flexDirection: 'column'
               }}>
-                <span>🎨</span>
-                <span>アニメフィルター</span>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px'
+                }}>
+                  <span>🎨</span>
+                  <span>アニメフィルター</span>
+                </div>
+                {/* 録画時間表示 */}
+                {isRecording && (
+                  <div style={{
+                    backgroundColor: 'rgba(255, 0, 0, 0.8)',
+                    padding: '4px 8px',
+                    borderRadius: '8px',
+                    fontSize: '14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    animation: 'pulse 1s infinite'
+                  }}>
+                    <div style={{
+                      width: '8px',
+                      height: '8px',
+                      backgroundColor: 'white',
+                      borderRadius: '50%'
+                    }}></div>
+                    REC {formatRecordingTime(recordingTime)}
+                  </div>
+                )}
               </div>
 
               {/* 右側：フィルター切り替え */}
@@ -1527,7 +1641,7 @@ export default function App() {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 width: '100%',
-                maxWidth: '350px'
+                maxWidth: '420px'
               }}>
                 {/* 左：フィルター設定 */}
                 <button 
@@ -1547,6 +1661,28 @@ export default function App() {
                   }}
                 >
                   🎛️
+                </button>
+
+                {/* 録画ボタン */}
+                <button 
+                  onClick={isRecording ? stopRecording : startRecording}
+                  style={{
+                    background: isRecording ? 'rgba(255, 0, 0, 0.8)' : 'rgba(255, 255, 255, 0.2)',
+                    border: '2px solid rgba(255, 255, 255, 0.3)',
+                    borderRadius: '12px',
+                    width: '50px',
+                    height: '50px',
+                    color: 'white',
+                    fontSize: '18px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.2s ease',
+                    animation: isRecording ? 'pulse 1s infinite' : 'none'
+                  }}
+                >
+                  {isRecording ? '⏹️' : '🎥'}
                 </button>
 
                 {/* 中央：シャッターボタン */}
