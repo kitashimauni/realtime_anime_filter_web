@@ -946,10 +946,7 @@ export default function App() {
           </label>
           
           <div style={{ marginTop: '10px', fontSize: isMobile ? '0.8rem' : '1rem' }}>
-            <p>OpenCV準備状態: {cvReady ? '✅ 準備完了' : '❌ 準備中...'}</p>
-            <p>接続状態: {isHTTPS ? '🔒 HTTPS' : '⚠️ HTTP (カメラアクセス制限あり)'}</p>
             <p>カメラ解像度: {videoSize.width}x{videoSize.height}</p>
-            <p>表示サイズ: {displaySize.width}x{displaySize.height}</p>
             <p>デバイス: {isMobile ? '📱 モバイル' : '🖥️ デスクトップ'}</p>
             <p>検出カメラ数: {devices.length}台</p>
             <p>処理品質: {processingQuality === 'high' ? '🔥 高品質' : processingQuality === 'medium' ? '⚡ 中品質' : '🚀 高速'}</p>
