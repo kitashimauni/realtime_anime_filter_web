@@ -661,11 +661,53 @@ export default function App() {
         if (processingQuality === 'low') {
           // 低品質モード：処理を軽量化
           adjustedParams.bilateralD = Math.max(3, Math.floor(filterParams.bilateralD / 2));
-          adjustedParams.medianBlur = Math.max(3, Math.floor(filterParams.medianBlur / 2));
-          adjustedParams.adaptiveBlockSize = Math.max(3, Math.floor(filterParams.adaptiveBlockSize / 2));
+          
+          // medianBlurは奇数である必要があるため、奇数に調整
+          const reducedMedianBlur = Math.floor(filterParams.medianBlur / 2);
+          adjustedParams.medianBlur = reducedMedianBlur % 2 === 0 ? reducedMedianBlur + 1 : reducedMedianBlur;
+          adjustedParams.medianBlur = Math.max(3, adjustedParams.medianBlur);
+          
+          // adaptiveBlockSizeは奇数である必要があるため、奇数に調整
+          const reducedBlockSize = Math.floor(filterParams.adaptiveBlockSize / 2);
+          adjustedParams.adaptiveBlockSize = reducedBlockSize % 2 === 0 ? reducedBlockSize + 1 : reducedBlockSize;
+          adjustedParams.adaptiveBlockSize = Math.max(3, adjustedParams.adaptiveBlockSize);
         } else if (processingQuality === 'medium') {
           // 中品質モード：適度に軽量化
           adjustedParams.bilateralD = Math.max(3, Math.floor(filterParams.bilateralD * 0.75));
+          
+          // medianBlurは奇数である必要があるため、奇数に調整
+          const reducedMedianBlur = Math.floor(filterParams.medianBlur * 0.75);
+          adjustedParams.medianBlur = reducedMedianBlur % 2 === 0 ? reducedMedianBlur + 1 : reducedMedianBlur;
+          adjustedParams.medianBlur = Math.max(3, adjustedParams.medianBlur);
+          
+          // adaptiveBlockSizeは奇数である必要があるため、奇数に調整
+          const reducedBlockSize = Math.floor(filterParams.adaptiveBlockSize * 0.75);
+          adjustedParams.adaptiveBlockSize = reducedBlockSize % 2 === 0 ? reducedBlockSize + 1 : reducedBlockSize;
+          adjustedParams.adaptiveBlockSize = Math.max(3, adjustedParams.adaptiveBlockSize);
+        }
+        
+        // medianBlurが奇数であることを最終確認
+        if (adjustedParams.medianBlur % 2 === 0) {
+          adjustedParams.medianBlur += 1;
+          console.warn(`medianBlurを奇数に調整: ${adjustedParams.medianBlur}`);
+        }
+        
+        // adaptiveBlockSizeが奇数であることを最終確認
+        if (adjustedParams.adaptiveBlockSize % 2 === 0) {
+          adjustedParams.adaptiveBlockSize += 1;
+          console.warn(`adaptiveBlockSizeを奇数に調整: ${adjustedParams.adaptiveBlockSize}`);
+        }
+        
+        // デバッグログ（特定の値の場合）
+        if (filterParams.adaptiveBlockSize === 9 || filterParams.adaptiveBlockSize === 13) {
+          console.log(`エッジ感度 ${filterParams.adaptiveBlockSize} での処理パラメータ:`, {
+            original: filterParams.adaptiveBlockSize,
+            adjusted: adjustedParams.adaptiveBlockSize,
+            quality: processingQuality,
+            bilateralD: adjustedParams.bilateralD,
+            medianBlur: adjustedParams.medianBlur,
+            adaptiveC: adjustedParams.adaptiveC
+          });
         }
         
         // ステップ1: バイラテラルフィルターで画像の平滑化
@@ -1364,10 +1406,20 @@ export default function App() {
                 max="15"
                 step="2"
                 value={filterParams.adaptiveBlockSize}
-                onChange={(e) => setFilterParams(prev => ({
-                  ...prev,
-                  adaptiveBlockSize: parseInt(e.target.value)
-                }))}
+                onChange={(e) => {
+                  let value = parseInt(e.target.value);
+                  // 奇数であることを確認
+                  if (value % 2 === 0) {
+                    value += 1;
+                  }
+                  // 最小値3、最大値15に制限
+                  value = Math.max(3, Math.min(15, value));
+                  
+                  setFilterParams(prev => ({
+                    ...prev,
+                    adaptiveBlockSize: value
+                  }));
+                }}
                 style={{ 
                   width: '100%',
                   height: '6px',
@@ -1692,10 +1744,20 @@ export default function App() {
                       max="15"
                       step="2"
                       value={filterParams.adaptiveBlockSize}
-                      onChange={(e) => setFilterParams(prev => ({
-                        ...prev,
-                        adaptiveBlockSize: parseInt(e.target.value)
-                      }))}
+                      onChange={(e) => {
+                        let value = parseInt(e.target.value);
+                        // 奇数であることを確認
+                        if (value % 2 === 0) {
+                          value += 1;
+                        }
+                        // 最小値3、最大値15に制限
+                        value = Math.max(3, Math.min(15, value));
+                        
+                        setFilterParams(prev => ({
+                          ...prev,
+                          adaptiveBlockSize: value
+                        }));
+                      }}
                       style={{ width: '100%' }}
                     />
                   </div>
