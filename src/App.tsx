@@ -20,6 +20,18 @@ export default function App() {
   const [showOrientationHint, setShowOrientationHint] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isHTTPS, setIsHTTPS] = useState(false);
+  
+  // フィルターパラメータ
+  const [filterParams, setFilterParams] = useState({
+    bilateralD: 7,           // バイラテラルフィルターの近傍サイズ
+    bilateralSigmaColor: 75, // カラー空間でのシグマ値
+    bilateralSigmaSpace: 75, // 座標空間でのシグマ値
+    medianBlur: 5,          // メディアンブラーのカーネルサイズ
+    adaptiveBlockSize: 9,   // 適応的閾値のブロックサイズ
+    adaptiveC: 2,           // 適応的閾値のC値
+    intensity: 1.0          // フィルター強度（0.0-1.0）
+  });
+  const [showFilterControls, setShowFilterControls] = useState(false);
 
   useEffect(() => {
     console.log('OpenCV初期化開始');
@@ -431,10 +443,24 @@ export default function App() {
           img.copyTo(imgRGB);
         }
         
+        // フィルター強度が0の場合は元画像を返す
+        if (filterParams.intensity === 0) {
+          imgRGB.delete();
+          const result = new cv.Mat();
+          img.copyTo(result);
+          return result;
+        }
+        
         console.log('ステップ1: バイラテラルフィルター開始');
         // ステップ1: バイラテラルフィルターで画像の平滑化
         const imgColor = new cv.Mat();
-        cv.bilateralFilter(imgRGB, imgColor, 7, 75, 75);
+        cv.bilateralFilter(
+          imgRGB, 
+          imgColor, 
+          filterParams.bilateralD, 
+          filterParams.bilateralSigmaColor, 
+          filterParams.bilateralSigmaSpace
+        );
         console.log('ステップ1完了');
         
         console.log('ステップ2: グレースケール変換開始');
@@ -444,7 +470,7 @@ export default function App() {
         console.log('ステップ2-1完了');
         
         const imgBlur = new cv.Mat();
-        cv.medianBlur(imgGray, imgBlur, 5);
+        cv.medianBlur(imgGray, imgBlur, filterParams.medianBlur);
         console.log('ステップ2完了');
         
         console.log('ステップ3: エッジ検出開始');
@@ -456,8 +482,8 @@ export default function App() {
           255,
           cv.ADAPTIVE_THRESH_MEAN_C,
           cv.THRESH_BINARY,
-          9,  // blockSize
-          2   // C値
+          filterParams.adaptiveBlockSize,
+          filterParams.adaptiveC
         );
         console.log('ステップ3完了');
         
@@ -472,6 +498,31 @@ export default function App() {
         const cartoon = new cv.Mat();
         cv.bitwise_and(imgColor, imgEdgeColor, cartoon);
         console.log('ステップ5完了');
+        
+        // フィルター強度の適用
+        if (filterParams.intensity < 1.0) {
+          const blended = new cv.Mat();
+          cv.addWeighted(
+            imgRGB, 
+            1.0 - filterParams.intensity, 
+            cartoon, 
+            filterParams.intensity, 
+            0, 
+            blended
+          );
+          
+          // 中間画像のメモリ解放
+          imgRGB.delete();
+          imgColor.delete();
+          imgGray.delete();
+          imgBlur.delete();
+          imgEdge.delete();
+          imgEdgeColor.delete();
+          cartoon.delete();
+          
+          console.log('cartoonizeImage完了（ブレンド済み）');
+          return blended;
+        }
         
         // 中間画像のメモリ解放
         imgRGB.delete();
@@ -500,7 +551,7 @@ export default function App() {
       console.log('フィルター処理クリーンアップ');
       cancelAnimationFrame(requestId);
     };
-  }, [cvReady, selectedDeviceId, stream]);
+  }, [cvReady, selectedDeviceId, stream, filterParams]);
 
   // ウィンドウリサイズ時の表示サイズ調整
   useEffect(() => {
@@ -645,6 +696,50 @@ export default function App() {
     setSelectedDeviceId(devices[nextIndex].deviceId);
   };
 
+  // フィルタープリセット
+  const filterPresets = {
+    soft: {
+      bilateralD: 15,
+      bilateralSigmaColor: 120,
+      bilateralSigmaSpace: 120,
+      medianBlur: 7,
+      adaptiveBlockSize: 11,
+      adaptiveC: 3,
+      intensity: 0.6
+    },
+    normal: {
+      bilateralD: 7,
+      bilateralSigmaColor: 75,
+      bilateralSigmaSpace: 75,
+      medianBlur: 5,
+      adaptiveBlockSize: 9,
+      adaptiveC: 2,
+      intensity: 1.0
+    },
+    strong: {
+      bilateralD: 5,
+      bilateralSigmaColor: 50,
+      bilateralSigmaSpace: 50,
+      medianBlur: 3,
+      adaptiveBlockSize: 7,
+      adaptiveC: 1,
+      intensity: 1.0
+    },
+    sketch: {
+      bilateralD: 3,
+      bilateralSigmaColor: 30,
+      bilateralSigmaSpace: 30,
+      medianBlur: 3,
+      adaptiveBlockSize: 5,
+      adaptiveC: 0,
+      intensity: 1.0
+    }
+  };
+
+  const applyPreset = (presetName: keyof typeof filterPresets) => {
+    setFilterParams(filterPresets[presetName]);
+  };
+
   return (
     <div 
       style={{ 
@@ -766,6 +861,18 @@ export default function App() {
               >
                 🔄 カメラ再初期化
               </button>
+
+              {/* フィルター設定ボタン */}
+              <button 
+                onClick={() => setShowFilterControls(!showFilterControls)}
+                style={{ 
+                  padding: isMobile ? '8px 16px' : '5px 10px',
+                  fontSize: isMobile ? '0.9rem' : '1rem',
+                  backgroundColor: showFilterControls ? '#ff4444' : '#4CAF50'
+                }}
+              >
+                🎛️ フィルター設定
+              </button>
               
               {isMobile && (
                 <button 
@@ -786,6 +893,226 @@ export default function App() {
             </div>
           </div>
         </>
+      )}
+
+      {/* 非全画面時のフィルター設定パネル */}
+      {!isFullscreen && showFilterControls && (
+        <div style={{
+          position: 'fixed',
+          top: '50%',
+          left: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: isMobile ? '90vw' : '400px',
+          maxHeight: '80vh',
+          background: 'rgba(0, 0, 0, 0.95)',
+          borderRadius: '12px',
+          padding: '20px',
+          color: 'white',
+          fontSize: isMobile ? '14px' : '16px',
+          zIndex: 2000,
+          overflowY: 'auto',
+          backdropFilter: 'blur(10px)',
+          border: '1px solid rgba(255, 255, 255, 0.2)'
+        }}>
+          <div style={{ marginBottom: '20px', fontWeight: 'bold', fontSize: isMobile ? '18px' : '20px', textAlign: 'center' }}>
+            🎨 フィルター設定
+          </div>
+          
+          {/* プリセット */}
+          <div style={{ marginBottom: '20px' }}>
+            <div style={{ marginBottom: '10px', fontWeight: 'bold' }}>プリセット:</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              {Object.keys(filterPresets).map((preset) => (
+                <button
+                  key={preset}
+                  onClick={() => applyPreset(preset as keyof typeof filterPresets)}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.2)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '12px',
+                    color: 'white',
+                    fontSize: isMobile ? '12px' : '14px',
+                    cursor: 'pointer',
+                    textAlign: 'center'
+                  }}
+                >
+                  {preset === 'soft' ? '✨ ソフト' :
+                   preset === 'normal' ? '🎯 ノーマル' :
+                   preset === 'strong' ? '💪 ストロング' :
+                   '✏️ スケッチ'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* パラメータ調整 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            {/* フィルター強度 */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+                フィルター強度: {Math.round(filterParams.intensity * 100)}%
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                value={filterParams.intensity}
+                onChange={(e) => setFilterParams(prev => ({
+                  ...prev,
+                  intensity: parseFloat(e.target.value)
+                }))}
+                style={{ 
+                  width: '100%',
+                  height: '6px',
+                  background: 'rgba(255, 255, 255, 0.3)',
+                  borderRadius: '3px'
+                }}
+              />
+            </div>
+
+            {/* バイラテラルフィルター */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px' }}>
+                スムージング強度: {filterParams.bilateralD}
+              </label>
+              <input
+                type="range"
+                min="3"
+                max="20"
+                step="2"
+                value={filterParams.bilateralD}
+                onChange={(e) => setFilterParams(prev => ({
+                  ...prev,
+                  bilateralD: parseInt(e.target.value)
+                }))}
+                style={{ 
+                  width: '100%',
+                  height: '6px',
+                  background: 'rgba(255, 255, 255, 0.3)',
+                  borderRadius: '3px'
+                }}
+              />
+            </div>
+
+            {/* カラーシグマ */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px' }}>
+                色の保持度: {filterParams.bilateralSigmaColor}
+              </label>
+              <input
+                type="range"
+                min="10"
+                max="200"
+                step="5"
+                value={filterParams.bilateralSigmaColor}
+                onChange={(e) => setFilterParams(prev => ({
+                  ...prev,
+                  bilateralSigmaColor: parseInt(e.target.value),
+                  bilateralSigmaSpace: parseInt(e.target.value)
+                }))}
+                style={{ 
+                  width: '100%',
+                  height: '6px',
+                  background: 'rgba(255, 255, 255, 0.3)',
+                  borderRadius: '3px'
+                }}
+              />
+            </div>
+
+            {/* メディアンブラー */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px' }}>
+                ノイズ除去: {filterParams.medianBlur}
+              </label>
+              <input
+                type="range"
+                min="3"
+                max="15"
+                step="2"
+                value={filterParams.medianBlur}
+                onChange={(e) => setFilterParams(prev => ({
+                  ...prev,
+                  medianBlur: parseInt(e.target.value)
+                }))}
+                style={{ 
+                  width: '100%',
+                  height: '6px',
+                  background: 'rgba(255, 255, 255, 0.3)',
+                  borderRadius: '3px'
+                }}
+              />
+            </div>
+
+            {/* エッジ検出 */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px' }}>
+                エッジ感度: {filterParams.adaptiveBlockSize}
+              </label>
+              <input
+                type="range"
+                min="3"
+                max="15"
+                step="2"
+                value={filterParams.adaptiveBlockSize}
+                onChange={(e) => setFilterParams(prev => ({
+                  ...prev,
+                  adaptiveBlockSize: parseInt(e.target.value)
+                }))}
+                style={{ 
+                  width: '100%',
+                  height: '6px',
+                  background: 'rgba(255, 255, 255, 0.3)',
+                  borderRadius: '3px'
+                }}
+              />
+            </div>
+
+            {/* エッジ閾値 */}
+            <div>
+              <label style={{ display: 'block', marginBottom: '8px' }}>
+                線の太さ: {filterParams.adaptiveC}
+              </label>
+              <input
+                type="range"
+                min="0"
+                max="10"
+                step="1"
+                value={filterParams.adaptiveC}
+                onChange={(e) => setFilterParams(prev => ({
+                  ...prev,
+                  adaptiveC: parseInt(e.target.value)
+                }))}
+                style={{ 
+                  width: '100%',
+                  height: '6px',
+                  background: 'rgba(255, 255, 255, 0.3)',
+                  borderRadius: '3px'
+                }}
+              />
+            </div>
+          </div>
+
+          {/* 閉じるボタン */}
+          <button
+            onClick={() => setShowFilterControls(false)}
+            style={{
+              marginTop: '20px',
+              width: '100%',
+              background: 'rgba(255, 255, 255, 0.2)',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '12px',
+              color: 'white',
+              cursor: 'pointer',
+              fontSize: isMobile ? '14px' : '16px',
+              fontWeight: 'bold'
+            }}
+          >
+            ✅ 設定完了
+          </button>
+        </div>
       )}
 
       <div style={{ 
@@ -891,6 +1218,191 @@ export default function App() {
               </button>
             </div>
 
+            {/* フィルター設定パネル */}
+            {showFilterControls && !showOriginal && (
+              <div style={{
+                position: 'fixed',
+                right: '20px',
+                top: '70px',
+                bottom: '140px',
+                width: '280px',
+                background: 'rgba(0, 0, 0, 0.9)',
+                borderRadius: '12px',
+                padding: '15px',
+                color: 'white',
+                fontSize: '12px',
+                zIndex: 1500,
+                overflowY: 'auto',
+                backdropFilter: 'blur(10px)'
+              }}>
+                <div style={{ marginBottom: '15px', fontWeight: 'bold', fontSize: '14px' }}>
+                  🎨 フィルター設定
+                </div>
+                
+                {/* プリセット */}
+                <div style={{ marginBottom: '15px' }}>
+                  <div style={{ marginBottom: '8px' }}>プリセット:</div>
+                  <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                    {Object.keys(filterPresets).map((preset) => (
+                      <button
+                        key={preset}
+                        onClick={() => applyPreset(preset as keyof typeof filterPresets)}
+                        style={{
+                          background: 'rgba(255, 255, 255, 0.2)',
+                          border: 'none',
+                          borderRadius: '8px',
+                          padding: '4px 8px',
+                          color: 'white',
+                          fontSize: '10px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        {preset === 'soft' ? '✨ ソフト' :
+                         preset === 'normal' ? '🎯 ノーマル' :
+                         preset === 'strong' ? '💪 ストロング' :
+                         '✏️ スケッチ'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* パラメータ調整 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {/* フィルター強度 */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>
+                      強度: {Math.round(filterParams.intensity * 100)}%
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                      value={filterParams.intensity}
+                      onChange={(e) => setFilterParams(prev => ({
+                        ...prev,
+                        intensity: parseFloat(e.target.value)
+                      }))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  {/* バイラテラルフィルター */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>
+                      スムージング: {filterParams.bilateralD}
+                    </label>
+                    <input
+                      type="range"
+                      min="3"
+                      max="20"
+                      step="2"
+                      value={filterParams.bilateralD}
+                      onChange={(e) => setFilterParams(prev => ({
+                        ...prev,
+                        bilateralD: parseInt(e.target.value)
+                      }))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  {/* カラーシグマ */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>
+                      色の保持: {filterParams.bilateralSigmaColor}
+                    </label>
+                    <input
+                      type="range"
+                      min="10"
+                      max="200"
+                      step="5"
+                      value={filterParams.bilateralSigmaColor}
+                      onChange={(e) => setFilterParams(prev => ({
+                        ...prev,
+                        bilateralSigmaColor: parseInt(e.target.value),
+                        bilateralSigmaSpace: parseInt(e.target.value)
+                      }))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  {/* メディアンブラー */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>
+                      ノイズ除去: {filterParams.medianBlur}
+                    </label>
+                    <input
+                      type="range"
+                      min="3"
+                      max="15"
+                      step="2"
+                      value={filterParams.medianBlur}
+                      onChange={(e) => setFilterParams(prev => ({
+                        ...prev,
+                        medianBlur: parseInt(e.target.value)
+                      }))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  {/* エッジ検出 */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>
+                      エッジ感度: {filterParams.adaptiveBlockSize}
+                    </label>
+                    <input
+                      type="range"
+                      min="3"
+                      max="15"
+                      step="2"
+                      value={filterParams.adaptiveBlockSize}
+                      onChange={(e) => setFilterParams(prev => ({
+                        ...prev,
+                        adaptiveBlockSize: parseInt(e.target.value)
+                      }))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+
+                  {/* エッジ閾値 */}
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '4px' }}>
+                      線の太さ: {filterParams.adaptiveC}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="10"
+                      step="1"
+                      value={filterParams.adaptiveC}
+                      onChange={(e) => setFilterParams(prev => ({
+                        ...prev,
+                        adaptiveC: parseInt(e.target.value)
+                      }))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                </div>
+
+                {/* 閉じるボタン */}
+                <button
+                  onClick={() => setShowFilterControls(false)}
+                  style={{
+                    marginTop: '15px',
+                    width: '100%',
+                    background: 'rgba(255, 255, 255, 0.2)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '8px',
+                    color: 'white',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✅ 完了
+                </button>
+              </div>
+            )}
+
             {/* ボトムコントロールバー */}
             <div style={{
               position: 'fixed',
@@ -913,13 +1425,13 @@ export default function App() {
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 width: '100%',
-                maxWidth: '300px'
+                maxWidth: '350px'
               }}>
-                {/* 左：ギャラリー/設定 */}
+                {/* 左：フィルター設定 */}
                 <button 
-                  onClick={() => {/* TODO: ギャラリー機能 */}}
+                  onClick={() => setShowFilterControls(!showFilterControls)}
                   style={{
-                    background: 'rgba(255, 255, 255, 0.2)',
+                    background: showFilterControls ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.2)',
                     border: 'none',
                     borderRadius: '12px',
                     width: '50px',
@@ -932,7 +1444,7 @@ export default function App() {
                     justifyContent: 'center'
                   }}
                 >
-                  🖼️
+                  🎛️
                 </button>
 
                 {/* 中央：シャッターボタン */}
