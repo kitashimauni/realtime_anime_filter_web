@@ -32,6 +32,13 @@ export default function App() {
     intensity: 1.0          // フィルター強度（0.0-1.0）
   });
   const [showFilterControls, setShowFilterControls] = useState(false);
+  
+  // パフォーマンス最適化関連
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [frameSkip, setFrameSkip] = useState(1);
+  const [processingQuality, setProcessingQuality] = useState<'high' | 'medium' | 'low'>('medium');
+  const [lastProcessTime, setLastProcessTime] = useState(0);
+  const frameSkipCountRef = useRef(0);
 
   useEffect(() => {
     console.log('OpenCV初期化開始');
@@ -58,6 +65,17 @@ export default function App() {
     const checkMobile = () => {
       const isMobileDevice = window.innerWidth <= 768 || /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
       setIsMobile(isMobileDevice);
+      
+      // モバイルデバイスの場合、パフォーマンスを優先した設定に変更
+      if (isMobileDevice) {
+        setFrameSkip(2); // 2フレームに1回処理
+        setProcessingQuality('low'); // 低品質モード
+        console.log('モバイルデバイス検出: パフォーマンス優先モードに設定');
+      } else {
+        setFrameSkip(1); // 全フレーム処理
+        setProcessingQuality('high'); // 高品質モード
+        console.log('デスクトップデバイス検出: 高品質モードに設定');
+      }
     };
 
     checkMobile();
@@ -365,21 +383,53 @@ export default function App() {
         return;
       }
 
+      // フレームスキップ処理（モバイルのパフォーマンス向上）
+      frameSkipCountRef.current++;
+      if (frameSkipCountRef.current < frameSkip) {
+        requestId = requestAnimationFrame(draw);
+        return;
+      }
+      frameSkipCountRef.current = 0;
+
+      // 処理中の場合はスキップ
+      if (isProcessing) {
+        requestId = requestAnimationFrame(draw);
+        return;
+      }
+
       frameCount++;
       if (frameCount === 1) {
         console.log('最初のフレーム処理を開始');
       }
       if (frameCount % 30 === 0) {
-        console.log(`フィルター処理実行中 - フレーム ${frameCount}`);
+        console.log(`フィルター処理実行中 - フレーム ${frameCount}, 品質: ${processingQuality}`);
       }
       
+      const startTime = performance.now();
+      setIsProcessing(true);
+      
       try {
-        const width = videoRef.current.videoWidth;
-        const height = videoRef.current.videoHeight;
+        let width = videoRef.current.videoWidth;
+        let height = videoRef.current.videoHeight;
         
         if (width === 0 || height === 0) {
+          setIsProcessing(false);
           requestId = requestAnimationFrame(draw);
           return;
+        }
+
+        // モバイルの場合、解像度を下げて処理速度を向上
+        let processWidth = width;
+        let processHeight = height;
+        
+        if (processingQuality === 'low') {
+          // 解像度を1/2に下げる
+          processWidth = Math.floor(width / 2);
+          processHeight = Math.floor(height / 2);
+        } else if (processingQuality === 'medium') {
+          // 解像度を3/4に下げる
+          processWidth = Math.floor(width * 0.75);
+          processHeight = Math.floor(height * 0.75);
         }
         
         // キャンバスの内部サイズが異なる場合は更新
@@ -389,57 +439,87 @@ export default function App() {
           canvasRef.current.height = height;
         }
 
-        // OpenCVフィルター処理 - Canvas2Dを使用してビデオフレームを取得
+        // OpenCVフィルター処理 - 解像度を下げた一時キャンバスを使用
         const canvas2d = document.createElement('canvas');
-        canvas2d.width = width;
-        canvas2d.height = height;
+        canvas2d.width = processWidth;
+        canvas2d.height = processHeight;
         const ctx = canvas2d.getContext('2d');
         if (!ctx) {
+          setIsProcessing(false);
           requestId = requestAnimationFrame(draw);
           return;
         }
         
-        // ビデオフレームをcanvasに描画
-        ctx.drawImage(videoRef.current, 0, 0, width, height);
+        // ビデオフレームを縮小してcanvasに描画
+        ctx.drawImage(videoRef.current, 0, 0, processWidth, processHeight);
         
         // canvasからImageDataを取得してMatに変換
-        const imageData = ctx.getImageData(0, 0, width, height);
+        const imageData = ctx.getImageData(0, 0, processWidth, processHeight);
         const src = cv.matFromImageData(imageData);
         
         // 読み取ったMatが空でないことを確認
         if (src.empty()) {
           console.log('ビデオフレームが空です');
           src.delete();
+          setIsProcessing(false);
           requestId = requestAnimationFrame(draw);
           return;
         }
         
         // アニメ風フィルター処理を適用
         const result = cartoonizeImage(src);
-        cv.imshow(canvasRef.current, result);
+        
+        // 結果を元のサイズに拡大してキャンバスに描画
+        if (processWidth !== width || processHeight !== height) {
+          const resized = new cv.Mat();
+          cv.resize(result, resized, new cv.Size(width, height), 0, 0, cv.INTER_LINEAR);
+          cv.imshow(canvasRef.current, resized);
+          resized.delete();
+        } else {
+          cv.imshow(canvasRef.current, result);
+        }
 
         // メモリ解放
         src.delete();
         result.delete();
+        
+        // パフォーマンス測定
+        const endTime = performance.now();
+        const processingTime = endTime - startTime;
+        setLastProcessTime(processingTime);
+        
+        // パフォーマンスが悪い場合は自動調整
+        if (isMobile && processingTime > 100) { // 100ms以上かかる場合
+          if (frameSkip < 4) {
+            setFrameSkip(prev => prev + 1);
+            console.log(`処理時間: ${processingTime.toFixed(1)}ms - フレームスキップを${frameSkip + 1}に増加`);
+          }
+        } else if (isMobile && processingTime < 50 && frameSkip > 1) { // 50ms未満で余裕がある場合
+          setFrameSkip(prev => Math.max(1, prev - 1));
+          console.log(`処理時間: ${processingTime.toFixed(1)}ms - フレームスキップを${frameSkip - 1}に減少`);
+        }
+        
       } catch (error) {
         console.error('フィルター処理エラー:', error);
+      } finally {
+        setIsProcessing(false);
       }
 
       requestId = requestAnimationFrame(draw);
     };
 
-    // アニメ風フィルター処理関数
+    // アニメ風フィルター処理関数（最適化版）
     function cartoonizeImage(img: any) {
       try {
-        console.log('cartoonizeImage開始 - 入力画像サイズ:', img.rows, 'x', img.cols, '型:', img.type());
+        if (frameCount <= 5) {
+          console.log('cartoonizeImage開始 - 入力画像サイズ:', img.rows, 'x', img.cols, '型:', img.type());
+        }
         
         // 入力画像の型をCV_8UC4に変換
         const imgRGB = new cv.Mat();
         if (img.type() !== cv.CV_8UC3) {
-          console.log('色空間変換を実行');
           cv.cvtColor(img, imgRGB, cv.COLOR_RGBA2RGB);
         } else {
-          console.log('既にRGB形式');
           img.copyTo(imgRGB);
         }
         
@@ -450,30 +530,36 @@ export default function App() {
           img.copyTo(result);
           return result;
         }
+
+        // 品質に応じてパラメータを調整
+        let adjustedParams = { ...filterParams };
+        if (processingQuality === 'low') {
+          // 低品質モード：処理を軽量化
+          adjustedParams.bilateralD = Math.max(3, Math.floor(filterParams.bilateralD / 2));
+          adjustedParams.medianBlur = Math.max(3, Math.floor(filterParams.medianBlur / 2));
+          adjustedParams.adaptiveBlockSize = Math.max(3, Math.floor(filterParams.adaptiveBlockSize / 2));
+        } else if (processingQuality === 'medium') {
+          // 中品質モード：適度に軽量化
+          adjustedParams.bilateralD = Math.max(3, Math.floor(filterParams.bilateralD * 0.75));
+        }
         
-        console.log('ステップ1: バイラテラルフィルター開始');
         // ステップ1: バイラテラルフィルターで画像の平滑化
         const imgColor = new cv.Mat();
         cv.bilateralFilter(
           imgRGB, 
           imgColor, 
-          filterParams.bilateralD, 
-          filterParams.bilateralSigmaColor, 
-          filterParams.bilateralSigmaSpace
+          adjustedParams.bilateralD, 
+          adjustedParams.bilateralSigmaColor, 
+          adjustedParams.bilateralSigmaSpace
         );
-        console.log('ステップ1完了');
         
-        console.log('ステップ2: グレースケール変換開始');
         // ステップ2: グレースケール化とメディアンブラー
         const imgGray = new cv.Mat();
-        cv.cvtColor(imgRGB, imgGray, cv.COLOR_RGBA2GRAY);
-        console.log('ステップ2-1完了');
+        cv.cvtColor(imgRGB, imgGray, cv.COLOR_RGB2GRAY);
         
         const imgBlur = new cv.Mat();
-        cv.medianBlur(imgGray, imgBlur, filterParams.medianBlur);
-        console.log('ステップ2完了');
+        cv.medianBlur(imgGray, imgBlur, adjustedParams.medianBlur);
         
-        console.log('ステップ3: エッジ検出開始');
         // ステップ3: エッジ検出（適応的閾値処理）
         const imgEdge = new cv.Mat();
         cv.adaptiveThreshold(
@@ -482,22 +568,17 @@ export default function App() {
           255,
           cv.ADAPTIVE_THRESH_MEAN_C,
           cv.THRESH_BINARY,
-          filterParams.adaptiveBlockSize,
-          filterParams.adaptiveC
+          adjustedParams.adaptiveBlockSize,
+          adjustedParams.adaptiveC
         );
-        console.log('ステップ3完了');
         
-        console.log('ステップ4: エッジ画像色変換開始');
-        // ステップ4: エッジ画像をRGBAに変換
+        // ステップ4: エッジ画像をRGBに変換
         const imgEdgeColor = new cv.Mat();
         cv.cvtColor(imgEdge, imgEdgeColor, cv.COLOR_GRAY2RGB);
-        console.log('ステップ4完了');
         
-        console.log('ステップ5: 画像合成開始');
         // ステップ5: カラー画像とエッジ画像を合成
         const cartoon = new cv.Mat();
         cv.bitwise_and(imgColor, imgEdgeColor, cartoon);
-        console.log('ステップ5完了');
         
         // フィルター強度の適用
         if (filterParams.intensity < 1.0) {
@@ -520,7 +601,6 @@ export default function App() {
           imgEdgeColor.delete();
           cartoon.delete();
           
-          console.log('cartoonizeImage完了（ブレンド済み）');
           return blended;
         }
         
@@ -532,7 +612,6 @@ export default function App() {
         imgEdge.delete();
         imgEdgeColor.delete();
         
-        console.log('cartoonizeImage完了');
         return cartoon;
       } catch (error: any) {
         console.error('cartoonizeImageエラー:', error);
@@ -551,7 +630,7 @@ export default function App() {
       console.log('フィルター処理クリーンアップ');
       cancelAnimationFrame(requestId);
     };
-  }, [cvReady, selectedDeviceId, stream, filterParams]);
+  }, [cvReady, selectedDeviceId, stream, filterParams, frameSkip, processingQuality, isMobile]);
 
   // ウィンドウリサイズ時の表示サイズ調整
   useEffect(() => {
@@ -758,7 +837,7 @@ export default function App() {
       {!isFullscreen && (
         <>
           <h1 style={{ fontSize: isMobile ? '1.5rem' : '2rem', margin: isMobile ? '10px 0' : '20px 0' }}>
-            アニメ風フィルター（カメラ選択対応）
+            アニメ風フィルター
           </h1>
 
           <label style={{ fontSize: isMobile ? '0.9rem' : '1rem', marginBottom: '10px' }}>
@@ -787,6 +866,11 @@ export default function App() {
             <p>表示サイズ: {displaySize.width}x{displaySize.height}</p>
             <p>デバイス: {isMobile ? '📱 モバイル' : '🖥️ デスクトップ'}</p>
             <p>検出カメラ数: {devices.length}台</p>
+            <p>処理品質: {processingQuality === 'high' ? '🔥 高品質' : processingQuality === 'medium' ? '⚡ 中品質' : '🚀 高速'}</p>
+            <p>フレームスキップ: {frameSkip}フレーム</p>
+            {lastProcessTime > 0 && (
+              <p>処理時間: {lastProcessTime.toFixed(1)}ms</p>
+            )}
             
             {/* エラー表示 */}
             {cameraError && (
@@ -860,6 +944,24 @@ export default function App() {
                 }}
               >
                 🔄 カメラ再初期化
+              </button>
+
+              {/* パフォーマンス設定ボタン */}
+              <button 
+                onClick={() => {
+                  const nextQuality = processingQuality === 'high' ? 'medium' : 
+                                    processingQuality === 'medium' ? 'low' : 'high';
+                  setProcessingQuality(nextQuality);
+                  console.log(`処理品質を${nextQuality}に変更`);
+                }}
+                style={{ 
+                  padding: isMobile ? '8px 16px' : '5px 10px',
+                  fontSize: isMobile ? '0.9rem' : '1rem',
+                  backgroundColor: '#9C27B0'
+                }}
+              >
+                {processingQuality === 'high' ? '🔥 高品質' : 
+                 processingQuality === 'medium' ? '⚡ 中品質' : '🚀 高速'}
               </button>
 
               {/* フィルター設定ボタン */}
